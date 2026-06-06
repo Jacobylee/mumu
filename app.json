@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "mumu",
+    "slug": "mumu",
+    "scheme": "mumu",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.mumu.words",
+      "icon": "./assets/icon.png"
+    },
+    "android": {
+      "package": "com.mumu.words",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      }
+    },
+    "extra": {
+      "reviewIntervals": [
+        2,
+        2,
+        3,
+        8,
+        15
+      ]
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-audio"
+    ]
+  }
+}

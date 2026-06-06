@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mumu — UI/UX 交互原型</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f0f0f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+
+  .phone-frame {
+    width: 375px; height: 812px; background: #fff; border-radius: 40px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.2); overflow: hidden; position: relative;
+    border: 8px solid #1a1a1a;
+  }
+
+  .status-bar {
+    height: 44px; background: #7C3AED; display: flex; align-items: center;
+    justify-content: center; color: white; font-size: 12px; font-weight: 600;
+  }
+
+  .screen { display: none; height: calc(100% - 44px - 60px); overflow-y: auto; background: #fafafa; }
+  .screen.active { display: flex; flex-direction: column; }
+
+  .tab-bar {
+    height: 60px; background: #fff; border-top: 1px solid #e5e5e5;
+    display: flex; position: absolute; bottom: 0; left: 0; right: 0;
+  }
+  .tab-item {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; color: #999; cursor: pointer; font-size: 10px; gap: 2px;
+    transition: color 0.2s;
+  }
+  .tab-item.active { color: #7C3AED; }
+  .tab-icon { font-size: 22px; }
+
+  /* Navigation header */
+  .nav-header {
+    padding: 12px 16px; display: flex; align-items: center; background: #fff;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .nav-back { font-size: 20px; cursor: pointer; color: #7C3AED; margin-right: 12px; }
+  .nav-title { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+
+  /* Login */
+  .login-screen { display: none; height: calc(100% - 44px); background: #fff; flex-direction: column; align-items: center; justify-content: center; padding: 40px 32px; }
+  .login-screen.active { display: flex; }
+  .login-logo { font-size: 32px; font-weight: 700; color: #7C3AED; margin-bottom: 8px; }
+  .login-subtitle { color: #888; font-size: 14px; margin-bottom: 40px; }
+  .login-input { width: 100%; height: 48px; border: 1px solid #ddd; border-radius: 12px; padding: 0 16px; font-size: 15px; margin-bottom: 12px; outline: none; }
+  .login-input:focus { border-color: #7C3AED; }
+  .login-btn { width: 100%; height: 48px; background: #7C3AED; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+  .login-btn:active { background: #6D28D9; }
+
+  /* Home */
+  .search-bar { margin: 12px 16px; height: 44px; background: #f3f0ff; border-radius: 22px; display: flex; align-items: center; padding: 0 16px; cursor: pointer; color: #999; font-size: 14px; }
+  .search-bar span { margin-left: 8px; }
+
+  .section-title { font-size: 14px; font-weight: 600; color: #1a1a1a; padding: 16px 16px 8px; }
+
+  .progress-card { margin: 0 16px 12px; background: linear-gradient(135deg, #7C3AED, #A78BFA); border-radius: 16px; padding: 20px; color: white; }
+  .progress-label { font-size: 13px; opacity: 0.9; }
+  .progress-num { font-size: 36px; font-weight: 700; margin: 4px 0; }
+  .progress-num small { font-size: 18px; font-weight: 400; opacity: 0.8; }
+  .progress-bar-bg { height: 6px; background: rgba(255,255,255,0.3); border-radius: 3px; margin-top: 12px; }
+  .progress-bar-fill { height: 100%; background: white; border-radius: 3px; width: 50%; }
+
+  .review-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #fff; margin: 0 16px 1px; cursor: pointer; }
+  .review-item:first-of-type { border-radius: 12px 12px 0 0; margin-top: 4px; }
+  .review-item:last-of-type { border-radius: 0 0 12px 12px; margin-bottom: 12px; }
+  .review-word { font-size: 15px; font-weight: 600; color: #1a1a1a; }
+  .review-remaining { font-size: 12px; color: #7C3AED; background: #f3f0ff; padding: 2px 8px; border-radius: 10px; }
+
+  .mastered-card { margin: 0 16px 20px; background: #fff; border-radius: 12px; padding: 16px; display: flex; align-items: center; justify-content: space-between; }
+  .mastered-label { font-size: 14px; color: #666; }
+  .mastered-count { font-size: 20px; font-weight: 700; color: #7C3AED; }
+
+  .start-review-btn { margin: 0 16px 20px; height: 48px; background: #7C3AED; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+
+  /* Search */
+  .search-input-bar { margin: 12px 16px; height: 44px; background: #f3f0ff; border-radius: 22px; display: flex; align-items: center; padding: 0 16px; }
+  .search-input-bar input { flex: 1; border: none; background: transparent; font-size: 15px; outline: none; }
+  .search-go { color: #7C3AED; font-size: 18px; cursor: pointer; padding: 4px 8px; }
+
+  /* Word Detail */
+  .word-header { padding: 20px 16px 12px; background: #fff; }
+  .word-title { font-size: 28px; font-weight: 700; color: #1a1a1a; }
+  .word-phonetic { font-size: 14px; color: #666; margin-top: 4px; }
+  .phonetic-clickable { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
+  .phonetic-clickable:hover { background: #f3f0ff; }
+  .phonetic-clickable:active { background: #e9e0ff; }
+  .phonetic-clickable.speaking { background: #f3f0ff; color: #7C3AED; }
+  .word-tags { display: flex; gap: 6px; margin-top: 8px; }
+  .word-tag { font-size: 11px; padding: 2px 10px; border-radius: 10px; background: #f3f0ff; color: #7C3AED; }
+  .word-section { padding: 12px 16px; background: #fff; margin-top: 8px; }
+  .word-section-title { font-size: 13px; font-weight: 600; color: #7C3AED; margin-bottom: 8px; text-transform: uppercase; }
+  .collocation-item { font-size: 14px; color: #444; padding: 3px 0; }
+
+  .meaning-block { padding: 16px; background: #fff; margin-top: 8px; }
+  .meaning-label { font-size: 12px; font-weight: 600; color: #7C3AED; margin-bottom: 6px; }
+  .meaning-en { font-size: 15px; color: #1a1a1a; line-height: 1.5; }
+  .meaning-example { font-size: 13px; color: #666; margin-top: 4px; font-style: italic; line-height: 1.5; }
+  .meaning-cn { display: none; font-size: 14px; color: #888; margin-top: 4px; line-height: 1.5; }
+  .meaning-cn.show { display: block; }
+
+  .toggle-cn { margin: 8px 16px; padding: 10px; background: #f3f0ff; border-radius: 10px; text-align: center; color: #7C3AED; font-size: 14px; font-weight: 500; cursor: pointer; }
+  .add-word-btn { margin: 12px 16px 20px; height: 48px; background: #7C3AED; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  .add-word-btn.added { background: #e5e5e5; color: #999; }
+
+  /* Word Book */
+  .book-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: #fff; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
+  .book-word { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+  .book-meta { text-align: right; }
+  .book-next { font-size: 12px; color: #666; }
+  .book-remaining { font-size: 11px; color: #7C3AED; }
+
+  /* Review */
+  .review-progress-top { padding: 12px 16px; font-size: 13px; color: #888; text-align: center; }
+  .review-card { margin: 8px 16px; background: #fff; border-radius: 16px; padding: 24px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .review-word-title { font-size: 24px; font-weight: 700; color: #1a1a1a; text-align: center; }
+  .review-phonetic { text-align: center; font-size: 14px; color: #888; margin-top: 4px; }
+  .review-tags { display: flex; justify-content: center; gap: 6px; margin-top: 8px; }
+  .review-tag { font-size: 11px; padding: 2px 10px; border-radius: 10px; background: #f3f0ff; color: #7C3AED; }
+  .review-meaning { margin-top: 16px; }
+  .review-meaning-en { font-size: 15px; color: #1a1a1a; line-height: 1.6; }
+  .review-example { font-size: 13px; color: #888; font-style: italic; margin-top: 4px; line-height: 1.5; }
+  .review-detail-cn { display: none; font-size: 14px; color: #888; margin-top: 4px; }
+  .review-detail-cn.show { display: block; }
+  .review-toggle-cn { margin-top: 12px; color: #7C3AED; font-size: 13px; cursor: pointer; text-align: center; }
+
+  .review-buttons { display: flex; gap: 12px; margin: 20px 16px; }
+  .review-btn { flex: 1; height: 52px; border-radius: 14px; font-size: 16px; font-weight: 600; border: none; cursor: pointer; }
+  .btn-unknown { background: #f5f5f5; color: #888; }
+  .btn-known { background: #7C3AED; color: white; }
+
+  /* Review Complete */
+  .complete-screen { display: none; height: calc(100% - 44px); background: #fff; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
+  .complete-screen.active { display: flex; }
+  .complete-icon { font-size: 64px; margin-bottom: 16px; }
+  .complete-title { font-size: 22px; font-weight: 700; color: #1a1a1a; margin-bottom: 8px; }
+  .complete-stat { font-size: 15px; color: #666; margin: 4px 0; }
+  .complete-stat strong { color: #7C3AED; }
+  .complete-btn { margin-top: 32px; width: 100%; height: 48px; background: #7C3AED; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; }
+
+  /* Empty states */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 40px; text-align: center; }
+  .empty-state-icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-state-text { font-size: 15px; color: #888; line-height: 1.6; }
+
+  /* My page */
+  .my-header { padding: 20px 16px; background: linear-gradient(135deg, #7C3AED, #A78BFA); color: white; }
+  .my-avatar { width: 56px; height: 56px; border-radius: 28px; background: rgba(255,255,255,0.3); display: flex; align-items: center; justify-content: center; font-size: 24px; margin-bottom: 8px; }
+  .my-name { font-size: 18px; font-weight: 600; }
+  .my-menu-item { display: flex; align-items: center; justify-content: space-between; padding: 16px; background: #fff; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
+  .my-menu-label { font-size: 15px; color: #1a1a1a; }
+  .my-menu-arrow { color: #ccc; }
+  .my-logout { margin: 20px 16px; height: 48px; background: #f5f5f5; color: #e53e3e; border: none; border-radius: 12px; font-size: 15px; font-weight: 500; cursor: pointer; }
+
+  /* Toast */
+  .toast { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.75); color: white; padding: 10px 20px; border-radius: 20px; font-size: 13px; z-index: 100; display: none; }
+  .toast.show { display: block; animation: fadeOut 2s forwards; }
+  @keyframes fadeOut { 0%,70% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* Loading skeleton */
+  .skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: breathe 1.5s ease-in-out infinite; border-radius: 8px; }
+  @keyframes breathe { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* No tab screens */
+  .no-tab { height: calc(100% - 44px); }
+</style>
+</head>
+<body>
+
+<div class="phone-frame">
+  <div class="status-bar">9:41</div>
+  <div class="toast" id="toast"></div>
+
+  <!-- Login -->
+  <div class="login-screen active" id="screen-login">
+    <div class="login-logo">mumu</div>
+    <div class="login-subtitle">职场英语 · 沉浸式学习</div>
+    <input class="login-input" placeholder="用户名" value="demo" />
+    <input class="login-input" type="password" placeholder="密码" value="123456" />
+    <button class="login-btn" onclick="login()">登 录</button>
+  </div>
+
+  <!-- Home -->
+  <div class="screen" id="screen-home">
+    <div class="search-bar" onclick="showScreen('screen-search')">
+      🔍 <span>搜索单词或短语...</span>
+    </div>
+
+    <div class="section-title">今日复习进度</div>
+    <div class="progress-card">
+      <div class="progress-label">已完成 / 今日待复习</div>
+      <div class="progress-num">10 <small>/ 20</small></div>
+      <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
+    </div>
+
+    <div class="section-title">今日待复习</div>
+    <div class="review-item" onclick="showScreen('screen-review')">
+      <span class="review-word">obscure</span>
+      <span class="review-remaining">剩余 3 次</span>
+    </div>
+    <div class="review-item" onclick="showScreen('screen-review')">
+      <span class="review-word">mitigate</span>
+      <span class="review-remaining">剩余 1 次</span>
+    </div>
+    <div class="review-item" onclick="showScreen('screen-review')">
+      <span class="review-word">concise</span>
+      <span class="review-remaining">剩余 2 次</span>
+    </div>
+
+    <div class="section-title">词汇积累</div>
+    <div class="mastered-card">
+      <span class="mastered-label">已掌握单词</span>
+      <span class="mastered-count">128</span>
+    </div>
+
+    <button class="start-review-btn" onclick="showScreen('screen-review')">开始今日复习</button>
+  </div>
+
+  <!-- Search -->
+  <div class="screen" id="screen-search">
+    <div class="nav-header">
+      <span class="nav-back" onclick="showScreen('screen-home')">←</span>
+      <div class="search-input-bar" style="flex:1; margin:0;">
+        <input id="searchInput" placeholder="输入单词或短语" value="obscure" />
+        <span class="search-go" onclick="doSearch()">搜索</span>
+      </div>
+    </div>
+
+    <div id="searchLoading" style="padding: 40px 16px;">
+      <div class="skeleton" style="height:32px; width:60%; margin-bottom:12px;"></div>
+      <div class="skeleton" style="height:16px; width:40%; margin-bottom:20px;"></div>
+      <div class="skeleton" style="height:60px; width:100%; margin-bottom:8px;"></div>
+      <div class="skeleton" style="height:60px; width:100%;"></div>
+    </div>
+
+    <div id="searchResults" style="display:none;">
+      <div class="review-item" onclick="showScreen('screen-detail')" style="border-radius:0;">
+        <span class="review-word">obscure</span>
+        <span style="font-size:13px; color:#888;">not discovered or known about; difficult to understand</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Word Detail -->
+  <div class="screen" id="screen-detail">
+    <div class="nav-header">
+      <span class="nav-back" onclick="goBack()">←</span>
+      <span class="nav-title">单词详情</span>
+    </div>
+
+    <div class="word-header">
+      <div class="word-title">obscure</div>
+      <div class="word-phonetic"><span class="phonetic-clickable" onclick="speak('obscure','uk')">UK /əbˈskjʊə(r)/</span> ｜ <span class="phonetic-clickable" onclick="speak('obscure','us')">US /əbˈskjʊr/</span></div>
+      <div class="word-tags">
+        <span class="word-tag">书面语</span>
+      </div>
+    </div>
+
+    <div class="word-section">
+      <div class="word-section-title">Common Collocations</div>
+      <div class="collocation-item">• obscure meaning</div>
+      <div class="collocation-item">• obscure reference</div>
+    </div>
+
+    <div class="meaning-block">
+      <div class="meaning-label">Meaning 1</div>
+      <div class="meaning-en">not discovered or known about</div>
+      <div class="meaning-example">The origins of the ritual remain obscure.</div>
+      <div class="meaning-cn">未知的；不明确的</div>
+      <div class="meaning-cn">这个仪式的起源仍然未知。</div>
+    </div>
+
+    <div class="meaning-block">
+      <div class="meaning-label">Meaning 2</div>
+      <div class="meaning-en">difficult to understand</div>
+      <div class="meaning-example">The article uses obscure language.</div>
+      <div class="meaning-cn">晦涩难懂的</div>
+      <div class="meaning-cn">这篇文章用了晦涩的语言。</div>
+    </div>
+
+    <div class="toggle-cn" onclick="toggleChinese()">中文释义</div>
+    <button class="add-word-btn" id="addWordBtn" onclick="addWord()">加入生词本</button>
+  </div>
+
+  <!-- Word Book -->
+  <div class="screen" id="screen-book">
+    <div class="section-title" style="font-size:20px; font-weight:700; padding-top:20px;">生词本</div>
+    <div class="book-item" onclick="showScreen('screen-detail')">
+      <span class="book-word">obscure</span>
+      <div class="book-meta">
+        <div class="book-next">今天 20:00</div>
+        <div class="book-remaining">剩余 3 次</div>
+      </div>
+    </div>
+    <div class="book-item" onclick="showScreen('screen-detail')">
+      <span class="book-word">mitigate</span>
+      <div class="book-meta">
+        <div class="book-next">明天</div>
+        <div class="book-remaining">剩余 4 次</div>
+      </div>
+    </div>
+    <div class="book-item" onclick="showScreen('screen-detail')">
+      <span class="book-word">concise</span>
+      <div class="book-meta">
+        <div class="book-next">3天后</div>
+        <div class="book-remaining">剩余 2 次</div>
+      </div>
+    </div>
+    <div class="book-item" onclick="showScreen('screen-detail')">
+      <span class="book-word">elaborate</span>
+      <div class="book-meta">
+        <div class="book-next">5天后</div>
+        <div class="book-remaining">剩余 5 次</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Review - Step 1: Word only -->
+  <div class="screen" id="screen-review">
+    <div class="nav-header">
+      <span class="nav-back" onclick="showScreen('screen-home')">←</span>
+      <span class="nav-title">今日复习</span>
+    </div>
+
+    <div class="review-progress-top" id="reviewProgress">3 / 20</div>
+
+    <!-- Undo bar -->
+    <div id="reviewUndoBar" style="display:none; margin:0 16px 4px; padding:8px 12px; background:#FFF7ED; border-radius:10px; display:flex; align-items:center; justify-content:space-between;">
+      <span style="font-size:13px; color:#92400E;">刚才标记了「<strong id="undoWordName">mitigate</strong>」为认识</span>
+      <span style="font-size:13px; color:#7C3AED; font-weight:600; cursor:pointer;" onclick="reviewUndo()">撤回</span>
+    </div>
+
+    <!-- Word-only card (initial state) -->
+    <div class="review-card" id="reviewWordOnly" style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:260px;">
+      <div class="review-word-title" style="font-size:36px;" id="reviewCurrentWord">obscure</div>
+      <div class="review-phonetic" id="reviewCurrentPhonetic" style="margin-top:8px;"><span class="phonetic-clickable" onclick="speak('obscure','uk')">UK /əbˈskjʊə(r)/</span> ｜ <span class="phonetic-clickable" onclick="speak('obscure','us')">US /əbˈskjʊr/</span></div>
+      <div style="margin-top:24px; font-size:13px; color:#bbb;">你认识这个词吗？</div>
+    </div>
+
+    <div class="review-buttons" id="reviewInitialBtns">
+      <button class="review-btn btn-unknown" onclick="reviewUnknown()">不认识</button>
+      <button class="review-btn btn-known" onclick="reviewKnown()">认识</button>
+    </div>
+  </div>
+
+  <!-- Review - Step 2: Detail shown (after "不认识" or "撤回") -->
+  <div class="screen" id="screen-review-detail">
+    <div class="nav-header">
+      <span class="nav-back" onclick="undoBackToReview()">←</span>
+      <span class="nav-title">今日复习</span>
+    </div>
+
+    <div class="review-progress-top" id="reviewDetailProgress">3 / 20</div>
+
+    <!-- Undo mode banner -->
+    <div id="reviewUndoBanner" style="display:none; margin:0 16px 4px; padding:10px 12px; background:#FFF7ED; border-radius:10px; text-align:center;">
+      <span style="font-size:13px; color:#92400E;">你之前标记了「认识」，确认要撤回吗？</span>
+    </div>
+
+    <div class="review-card" style="max-height: calc(100% - 180px); overflow-y: auto;">
+      <div class="review-word-title" style="font-size:28px;" id="detailWordTitle">obscure</div>
+      <div class="review-phonetic" id="detailPhonetic"><span class="phonetic-clickable" onclick="speak('obscure','uk')">UK /əbˈskjʊə(r)/</span> ｜ <span class="phonetic-clickable" onclick="speak('obscure','us')">US /əbˈskjʊr/</span></div>
+      <div class="review-tags">
+        <span class="review-tag">书面语</span>
+      </div>
+
+      <div style="margin-top:8px; font-size:12px; color:#7C3AED; font-weight:600;">Collocations</div>
+      <div style="font-size:13px; color:#666;" id="detailCollocations">obscure meaning, obscure reference</div>
+
+      <div class="review-meaning">
+        <div style="font-size:12px; color:#7C3AED; font-weight:600; margin-bottom:4px;">Meaning 1</div>
+        <div class="review-meaning-en">not discovered or known about</div>
+        <div class="review-example">The origins of the ritual remain obscure.</div>
+        <div class="review-detail-cn">未知的；不明确的</div>
+        <div class="review-detail-cn">这个仪式的起源仍然未知。</div>
+      </div>
+
+      <div class="review-meaning">
+        <div style="font-size:12px; color:#7C3AED; font-weight:600; margin-bottom:4px;">Meaning 2</div>
+        <div class="review-meaning-en">difficult to understand</div>
+        <div class="review-example">The article uses obscure language.</div>
+        <div class="review-detail-cn">晦涩难懂的</div>
+        <div class="review-detail-cn">这篇文章用了晦涩的语言。</div>
+      </div>
+
+      <div class="review-toggle-cn" onclick="toggleReviewDetailChinese()">查看中文</div>
+    </div>
+
+    <!-- Normal mode: 下一个 -->
+    <div class="review-buttons" id="detailBtnsNormal">
+      <button class="review-btn" style="background:#7C3AED; color:white; flex:1;" onclick="reviewNext()">下一个</button>
+    </div>
+
+    <!-- Undo mode: 仍然认识 / 撤回为不认识 -->
+    <div class="review-buttons" id="detailBtnsUndo" style="display:none;">
+      <button class="review-btn" style="background:#f5f5f5; color:#888;" onclick="undoCancel()">仍然认识</button>
+      <button class="review-btn" style="background:#EF4444; color:white;" onclick="undoConfirm()">撤回为不认识</button>
+    </div>
+  </div>
+
+  <!-- My -->
+  <div class="screen" id="screen-my">
+    <div class="my-header">
+      <div class="my-avatar">D</div>
+      <div class="my-name">demo</div>
+    </div>
+    <div class="my-menu-item" onclick="showScreen('screen-mastered')">
+      <span class="my-menu-label">已掌握单词</span>
+      <span class="my-menu-arrow">128 →</span>
+    </div>
+    <div class="my-menu-item" style="justify-content:space-between;">
+      <span class="my-menu-label">复习自动发音</span>
+      <label style="position:relative; display:inline-block; width:48px; height:28px; cursor:pointer;">
+        <input type="checkbox" id="autoPronounceToggle" checked style="display:none;" onchange="toggleAutoPronounce()">
+        <span style="position:absolute; inset:0; background:#7C3AED; border-radius:14px; transition:0.3s;" id="toggleTrack"></span>
+        <span style="position:absolute; top:2px; left:22px; width:24px; height:24px; background:white; border-radius:12px; transition:0.3s; box-shadow:0 1px 3px rgba(0,0,0,0.2);" id="toggleThumb"></span>
+      </label>
+    </div>
+    <div class="my-menu-item" onclick="showScreen('screen-intervals')">
+      <span class="my-menu-label">复习间隔说明</span>
+      <span class="my-menu-arrow">→</span>
+    </div>
+    <button class="my-logout" onclick="logout()">退出登录</button>
+  </div>
+
+  <!-- Mastered Words -->
+  <div class="screen" id="screen-mastered">
+    <div class="nav-header">
+      <span class="nav-back" onclick="goBack()">←</span>
+      <span class="nav-title">已掌握单词</span>
+    </div>
+    <div style="padding:16px; color:#888; font-size:13px;">共掌握 128 个单词</div>
+    <div class="book-item">
+      <span class="book-word">elaborate</span>
+      <div class="book-meta"><div class="book-remaining" style="color:#10B981;">已掌握</div></div>
+    </div>
+    <div class="book-item">
+      <span class="book-word">comprehensive</span>
+      <div class="book-meta"><div class="book-remaining" style="color:#10B981;">已掌握</div></div>
+    </div>
+    <div class="book-item">
+      <span class="book-word">substantiate</span>
+      <div class="book-meta"><div class="book-remaining" style="color:#10B981;">已掌握</div></div>
+    </div>
+    <div class="book-item">
+      <span class="book-word">ambiguous</span>
+      <div class="book-meta"><div class="book-remaining" style="color:#10B981;">已掌握</div></div>
+    </div>
+    <div class="book-item">
+      <span class="book-word">preliminary</span>
+      <div class="book-meta"><div class="book-remaining" style="color:#10B981;">已掌握</div></div>
+    </div>
+  </div>
+
+  <!-- Review Intervals -->
+  <div class="screen" id="screen-intervals">
+    <div class="nav-header">
+      <span class="nav-back" onclick="goBack()">←</span>
+      <span class="nav-title">复习间隔说明</span>
+    </div>
+    <div style="padding:20px 16px;">
+      <div style="font-size:15px; color:#1a1a1a; line-height:1.8; margin-bottom:20px;">
+        每个生词需要完成 <strong style="color:#7C3AED;">5 轮复习</strong> 才能标记为已掌握。复习间隔从上一次复习日期算起：
+      </div>
+      <div style="background:#f3f0ff; border-radius:14px; padding:16px; margin-bottom:16px;">
+        <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #e9e0ff;">
+          <span style="color:#666; font-size:14px;">第 1 轮</span>
+          <span style="color:#7C3AED; font-weight:600; font-size:14px;">2 天后</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #e9e0ff;">
+          <span style="color:#666; font-size:14px;">第 2 轮</span>
+          <span style="color:#7C3AED; font-weight:600; font-size:14px;">2 天后</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #e9e0ff;">
+          <span style="color:#666; font-size:14px;">第 3 轮</span>
+          <span style="color:#7C3AED; font-weight:600; font-size:14px;">3 天后</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #e9e0ff;">
+          <span style="color:#666; font-size:14px;">第 4 轮</span>
+          <span style="color:#7C3AED; font-weight:600; font-size:14px;">8 天后</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:8px 0;">
+          <span style="color:#666; font-size:14px;">第 5 轮</span>
+          <span style="color:#7C3AED; font-weight:600; font-size:14px;">15 天后</span>
+        </div>
+      </div>
+      <div style="font-size:13px; color:#999; line-height:1.6;">
+        点击「不认识」后，当次复习视为无效，该词将重新从第 1 轮开始。完成全部 5 轮复习后，该词标记为已掌握。
+      </div>
+    </div>
+  </div>
+
+  <!-- Review Complete -->
+  <div class="complete-screen" id="screen-complete">
+    <div class="complete-icon">🎉</div>
+    <div class="complete-title">今日复习完成！</div>
+    <div class="complete-stat">完成 <strong>20</strong> 个单词</div>
+    <div class="complete-stat">正确率 <strong>85%</strong></div>
+    <div class="complete-stat">连续学习 <strong>7</strong> 天</div>
+    <button class="complete-btn" onclick="showScreen('screen-home');setTab('home')">返回首页</button>
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar" id="tabBar" style="display:none;">
+    <div class="tab-item active" id="tab-home" onclick="setTab('home')">
+      <span class="tab-icon">🏠</span>首页
+    </div>
+    <div class="tab-item" id="tab-book" onclick="setTab('book')">
+      <span class="tab-icon">📖</span>生词本
+    </div>
+    <div class="tab-item" id="tab-my" onclick="setTab('my')">
+      <span class="tab-icon">👤</span>我的
+    </div>
+  </div>
+</div>
+
+<script>
+  let history = [];
+
+  let reviewIndex = 0;
+  let hasPreviousKnown = false;
+  let previousKnownWord = null;
+  let isUndoMode = false;
+  let autoPronounce = true;
+  const reviewWords = [
+    { word: 'obscure', uk: '/əbˈskjʊə(r)/', us: '/əbˈskjʊr/' },
+    { word: 'mitigate', uk: '/ˈmɪtɪɡeɪt/', us: '/ˈmɪtɪɡeɪt/' },
+    { word: 'concise', uk: '/kənˈsaɪs/', us: '/kənˈsaɪs/' },
+  ];
+  const reviewTotal = 20;
+
+  // TTS
+  function speak(word, accent) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = accent === 'uk' ? 'en-GB' : 'en-US';
+    u.rate = 0.85;
+
+    // Highlight the clicked phonetic
+    const el = event.target;
+    el.classList.add('speaking');
+    u.onend = () => el.classList.remove('speaking');
+    u.onerror = () => el.classList.remove('speaking');
+
+    window.speechSynthesis.speak(u);
+  }
+
+  function speakWord(word) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = 'en-US';
+    u.rate = 0.85;
+    window.speechSynthesis.speak(u);
+  }
+
+  // Auto pronounce toggle
+  function toggleAutoPronounce() {
+    autoPronounce = document.getElementById('autoPronounceToggle').checked;
+    const track = document.getElementById('toggleTrack');
+    const thumb = document.getElementById('toggleThumb');
+    if (autoPronounce) {
+      track.style.background = '#7C3AED';
+      thumb.style.left = '22px';
+    } else {
+      track.style.background = '#ccc';
+      thumb.style.left = '2px';
+    }
+  }
+
+  function showScreen(id) {
+    const currentActive = document.querySelector('.screen.active, .login-screen.active, .complete-screen.active');
+    if (currentActive) {
+      history.push(currentActive.id);
+    }
+
+    document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+
+    const el = document.getElementById(id);
+    el.classList.add('active');
+
+    const tabBar = document.getElementById('tabBar');
+    const tabScreens = ['screen-home', 'screen-book', 'screen-my'];
+    tabBar.style.display = tabScreens.includes(id) ? 'flex' : 'none';
+
+    if (id === 'screen-search') {
+      document.getElementById('searchLoading').style.display = 'block';
+      document.getElementById('searchResults').style.display = 'none';
+      setTimeout(() => {
+        document.getElementById('searchLoading').style.display = 'none';
+        document.getElementById('searchResults').style.display = 'block';
+      }, 800);
+    }
+
+    if (id === 'screen-review') {
+      reviewIndex = 0;
+      hasPreviousKnown = false;
+      previousKnownWord = null;
+      updateReviewWord();
+    }
+  }
+
+  function updateReviewWord() {
+    if (reviewIndex >= reviewWords.length) {
+      showScreen('screen-complete');
+      return;
+    }
+    const w = reviewWords[reviewIndex];
+    document.getElementById('reviewCurrentWord').textContent = w.word;
+    document.getElementById('reviewCurrentPhonetic').innerHTML =
+      '<span class="phonetic-clickable" onclick="speak(\'' + w.word + '\',\'uk\')">UK ' + w.uk + '</span> ｜ <span class="phonetic-clickable" onclick="speak(\'' + w.word + '\',\'us\')">US ' + w.us + '</span>';
+    document.getElementById('reviewProgress').textContent = (reviewIndex + 1) + ' / ' + reviewTotal;
+    document.getElementById('reviewDetailProgress').textContent = (reviewIndex + 1) + ' / ' + reviewTotal;
+
+    // Auto pronounce if enabled
+    if (autoPronounce) {
+      speakWord(w.word);
+    }
+
+    // Show/hide undo bar
+    const undoBar = document.getElementById('reviewUndoBar');
+    if (hasPreviousKnown && previousKnownWord) {
+      undoBar.style.display = 'flex';
+      document.getElementById('undoWordName').textContent = previousKnownWord.word;
+    } else {
+      undoBar.style.display = 'none';
+    }
+
+    // Reset detail chinese
+    document.querySelectorAll('.review-detail-cn').forEach(c => c.classList.remove('show'));
+    const detailToggle = document.querySelector('#screen-review-detail .review-toggle-cn');
+    if (detailToggle) detailToggle.textContent = '查看中文';
+  }
+
+  function reviewKnown() {
+    hasPreviousKnown = true;
+    previousKnownWord = reviewWords[reviewIndex];
+
+    showToast('认识 ✓');
+    reviewIndex++;
+    if (reviewIndex >= reviewWords.length) {
+      setTimeout(() => showScreen('screen-complete'), 400);
+    } else {
+      setTimeout(() => updateReviewWord(), 300);
+    }
+  }
+
+  function reviewUnknown() {
+    isUndoMode = false;
+    showReviewDetail(reviewWords[reviewIndex], false);
+  }
+
+  function reviewUndo() {
+    isUndoMode = true;
+    showReviewDetail(previousKnownWord, true);
+  }
+
+  function showReviewDetail(wordObj, undoMode) {
+    document.getElementById('detailWordTitle').textContent = wordObj.word;
+    document.getElementById('detailPhonetic').innerHTML =
+      '<span class="phonetic-clickable" onclick="speak(\'' + wordObj.word + '\',\'uk\')">UK ' + wordObj.uk + '</span> ｜ <span class="phonetic-clickable" onclick="speak(\'' + wordObj.word + '\',\'us\')">US ' + wordObj.us + '</span>';
+
+    if (undoMode) {
+      document.getElementById('detailBtnsNormal').style.display = 'none';
+      document.getElementById('detailBtnsUndo').style.display = 'flex';
+      document.getElementById('reviewUndoBanner').style.display = 'block';
+    } else {
+      document.getElementById('detailBtnsNormal').style.display = 'flex';
+      document.getElementById('detailBtnsUndo').style.display = 'none';
+      document.getElementById('reviewUndoBanner').style.display = 'none';
+    }
+
+    document.querySelectorAll('.review-detail-cn').forEach(c => c.classList.remove('show'));
+    const detailToggle = document.querySelector('#screen-review-detail .review-toggle-cn');
+    if (detailToggle) detailToggle.textContent = '查看中文';
+
+    document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+    document.getElementById('screen-review-detail').classList.add('active');
+    document.getElementById('tabBar').style.display = 'none';
+  }
+
+  function reviewNext() {
+    reviewIndex++;
+    hasPreviousKnown = false;
+    previousKnownWord = null;
+    goToReviewScreen();
+  }
+
+  function undoBackToReview() {
+    goToReviewScreen();
+  }
+
+  function undoCancel() {
+    showToast('保持「认识」');
+    goToReviewScreen();
+  }
+
+  function undoConfirm() {
+    showToast('已撤回为「不认识」，将重新从第1轮开始');
+    hasPreviousKnown = false;
+    previousKnownWord = null;
+    goToReviewScreen();
+  }
+
+  function goToReviewScreen() {
+    document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+    document.getElementById('screen-review').classList.add('active');
+    document.getElementById('tabBar').style.display = 'none';
+    history = [];
+
+    if (reviewIndex >= reviewWords.length) {
+      showScreen('screen-complete');
+      return;
+    }
+    updateReviewWord();
+  }
+
+  function goBack() {
+    if (history.length > 0) {
+      const prevId = history.pop();
+      document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+      document.getElementById(prevId).classList.add('active');
+
+      const tabBar = document.getElementById('tabBar');
+      const tabScreens = ['screen-home', 'screen-book', 'screen-my'];
+      tabBar.style.display = tabScreens.includes(prevId) ? 'flex' : 'none';
+    }
+  }
+
+  function setTab(tab) {
+    document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+
+    const map = { home: 'screen-home', book: 'screen-book', my: 'screen-my' };
+    history = [];
+    document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(map[tab]).classList.add('active');
+    document.getElementById('tabBar').style.display = 'flex';
+  }
+
+  function login() {
+    showScreen('screen-home');
+    document.getElementById('tabBar').style.display = 'flex';
+    setTab('home');
+  }
+
+  function logout() {
+    document.querySelectorAll('.screen, .login-screen, .complete-screen').forEach(s => s.classList.remove('active'));
+    document.getElementById('screen-login').classList.add('active');
+    document.getElementById('tabBar').style.display = 'none';
+    history = [];
+  }
+
+  function doSearch() {
+    document.getElementById('searchLoading').style.display = 'block';
+    document.getElementById('searchResults').style.display = 'none';
+    setTimeout(() => {
+      document.getElementById('searchLoading').style.display = 'none';
+      document.getElementById('searchResults').style.display = 'block';
+    }, 800);
+  }
+
+  function toggleChinese() {
+    const items = document.querySelectorAll('#screen-detail .meaning-cn');
+    const btn = document.querySelector('.toggle-cn');
+    const isShown = items[0] && items[0].classList.contains('show');
+    items.forEach(i => i.classList.toggle('show'));
+    btn.textContent = isShown ? '中文释义' : '收起中文';
+  }
+
+  function toggleReviewDetailChinese() {
+    const items = document.querySelectorAll('#screen-review-detail .review-detail-cn');
+    const btn = document.querySelector('#screen-review-detail .review-toggle-cn');
+    const isShown = items[0] && items[0].classList.contains('show');
+    items.forEach(i => i.classList.toggle('show'));
+    btn.textContent = isShown ? '查看中文' : '收起中文';
+  }
+
+  function addWord() {
+    const btn = document.getElementById('addWordBtn');
+    if (btn.classList.contains('added')) return;
+    btn.classList.add('added');
+    btn.textContent = '已在生词本中';
+    showToast('添加成功');
+  }
+
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.classList.remove('show');
+    void toast.offsetWidth;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+</script>
+
+</body>
+</html>

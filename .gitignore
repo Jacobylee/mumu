@@ -1,0 +1,21 @@
+.DS_Store
+node_modules/
+node_modules_*/
+.expo/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+*.bak
+
+# Qoder
+.qoder/
+
+# EAS / native build artifacts
+ios/
+android/
+*.apk
+*.aab
+*.ipa
