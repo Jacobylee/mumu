@@ -27,7 +27,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 import { fetchYoudaoAudio } from './src/lib/youdaoTts';
 import { formatRelativeReviewTime, searchWord } from './src/lib/dictionary';
 import type { SearchOutcome } from './src/lib/dictionary';
-import { chatWithQwen, translateMeaningsToChinese, type ChatMessage } from './src/lib/qwen';
+import { chatWithQwenStream, translateMeaningsToChinese, type ChatMessage } from './src/lib/qwen';
 import { completeReview, createUserWord, isDue } from './src/lib/review';
 import {
   loadAll,
@@ -36,8 +36,12 @@ import {
   saveDailyStats,
   saveQwenApiKey,
   saveReviewLogs,
+  saveSearchHistory,
   saveSettings,
   saveUserWords,
+  loadSearchHistory,
+  loadSearchWordCache,
+  saveSearchWordCache,
   todayKey,
   type ChatHistoryMap,
   type CnTranslationMap
@@ -68,6 +72,7 @@ function AppContent() {
   const [selectedWord, setSelectedWord] = useState<Word | null>(null);
   const [searchResult, setSearchResult] = useState<Word | null>(null);
   const [searchError, setSearchError] = useState('');
+  const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
   const [userWords, setUserWords] = useState<UserWord[]>(initialUserWords);
   const [reviewLogs, setReviewLogs] = useState<ReviewLog[]>([]);
   const [settings, setSettings] = useState<AppSettings>({ autoPronounceOnReview: true });
@@ -85,10 +90,13 @@ function AppContent() {
   const [aiTargetWord, setAiTargetWord] = useState<Word | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
+  const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatHistoryMap>({});
   const [cnTranslations, setCnTranslations] = useState<CnTranslationMap>({});
   const [translatingCn, setTranslatingCn] = useState(false);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
+    const [searchWordCache, setSearchWordCache] = useState<Record<string, Word>>({});
 
   useEffect(() => {
     return () => {
@@ -115,6 +123,8 @@ function AppContent() {
       .finally(() => {
         if (!cancelled) setHydrated(true);
       });
+    loadSearchHistory().then(h => { if (!cancelled) setSearchHistory(h); });
+    loadSearchWordCache().then(c => { if (!cancelled) setSearchWordCache(c as Record<string, Word>); });
     return () => {
       cancelled = true;
     };
@@ -143,6 +153,12 @@ function AppContent() {
   useEffect(() => {
     if (hydrated) saveCnTranslations(cnTranslations);
   }, [hydrated, cnTranslations]);
+  useEffect(() => {
+    if (hydrated && searchHistory.length > 0) saveSearchHistory(searchHistory);
+  }, [hydrated, searchHistory]);
+  useEffect(() => {
+    if (hydrated && Object.keys(searchWordCache).length > 0) saveSearchWordCache(searchWordCache as Record<string, unknown>);
+  }, [hydrated, searchWordCache]);
 
   // 词典合并：mock 内置词作为查词降级，加上生词本里快照的词，确保离线也能查看详情。
   const wordById = useMemo(() => {
@@ -159,6 +175,12 @@ function AppContent() {
   const selectedUserWord = selectedWord ? userWords.find(item => item.word_id === selectedWord.id) : undefined;
 
   function navigate(next: ScreenName) {
+    if (next === 'search') {
+      setQuery('');
+      setSearchResult(null);
+      setSearchError('');
+      setSearchSuggestions([]);
+    }
     setHistory(prev => [...prev, screen]);
     setScreen(next);
   }
@@ -222,23 +244,61 @@ function AppContent() {
 
     const systemMsg: ChatMessage = {
       role: 'system',
-      content: `你是一名亲切专业的英语学习辅导助手。学生正在学习的单词是「${aiTargetWord.word}」。请使用中文回答（除非学生明确要求英文），回答要简洁具体、贴近实际使用场景，必要时可补充英文例句，不要用 Markdown 表格。`
+      content: `你是一名亲切专业的英语学习辅导助手。学生正在学习的单词是「${aiTargetWord.word}」。请使用中文回答（除非学生明确要求英文），回答要简洁具体、贴近实际使用场景，必要时可补充英文例句，不要用 Markdown 表格。\n\n重要：在你的回复最后，另起一行，用如下格式给出3个学生可能接下来想问的问题建议（不要加序号，用|分隔）：\n[FOLLOWUP]问题1|问题2|问题3`
     };
+    setFollowUpQuestions([]);
 
-    const outcome = await chatWithQwen([systemMsg, ...nextMessages], qwenApiKey);
+    // 流式输出：收到第一段内容时才插入气泡，之后逐步更新
+    let streamInserted = false;
+
+    const outcome = await chatWithQwenStream(
+      [systemMsg, ...nextMessages],
+      qwenApiKey,
+      (partialText) => {
+        if (!streamInserted) {
+          streamInserted = true;
+          setChatMessages(prev => [...prev, { role: 'assistant', content: partialText }]);
+        } else {
+          setChatMessages(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: partialText };
+            return updated;
+          });
+        }
+      }
+    );
     setChatBusy(false);
 
     if (outcome.kind === 'ok') {
-      const replyMsg: ChatMessage = { role: 'assistant', content: outcome.reply };
-      setChatMessages(prev => {
-        const updated = [...prev, replyMsg];
-        setChatHistory(history => ({ ...history, [key]: updated }));
-        return updated;
-      });
+      let replyText = outcome.reply;
+      let newFollowUps: string[] = [];
+      const followUpMatch = replyText.match(/\[FOLLOWUP\](.+)$/m);
+      if (followUpMatch) {
+        replyText = replyText.replace(/\n?\[FOLLOWUP\].+$/m, '').trimEnd();
+        newFollowUps = followUpMatch[1].split('|').map(q => q.trim()).filter(q => q.length > 0).slice(0, 3);
+      }
+      setFollowUpQuestions(newFollowUps);
+      // 最终更新为完整回复（去掉 FOLLOWUP 标记）
+      const replyMsg: ChatMessage = { role: 'assistant', content: replyText };
+      if (streamInserted) {
+        setChatMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = replyMsg;
+          setChatHistory(history => ({ ...history, [key]: updated }));
+          return updated;
+        });
+      } else {
+        setChatMessages(prev => {
+          const updated = [...prev, replyMsg];
+          setChatHistory(history => ({ ...history, [key]: updated }));
+          return updated;
+        });
+      }
       return;
     }
     if (outcome.kind === 'no_key') {
       Alert.alert('未配置 API Key', '请先在「我的」中配置 Qwen API Key');
+      if (streamInserted) setChatMessages(prev => prev.slice(0, -1));
       return;
     }
     const errMsg =
@@ -248,11 +308,20 @@ function AppContent() {
           ? '网络异常，请检查网络'
           : '请求失败，请重试';
     const errBubble: ChatMessage = { role: 'assistant', content: `⚠️ ${errMsg}` };
-    setChatMessages(prev => {
-      const updated = [...prev, errBubble];
-      setChatHistory(history => ({ ...history, [key]: updated }));
-      return updated;
-    });
+    if (streamInserted) {
+      setChatMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = errBubble;
+        setChatHistory(history => ({ ...history, [key]: updated }));
+        return updated;
+      });
+    } else {
+      setChatMessages(prev => {
+        const updated = [...prev, errBubble];
+        setChatHistory(history => ({ ...history, [key]: updated }));
+        return updated;
+      });
+    }
   }
 
   /**
@@ -292,7 +361,7 @@ function AppContent() {
     setTranslatingCn(false);
     if (outcome.kind === 'ok') {
       const items = outcome.items.slice(0, word.meanings.length);
-      while (items.length < word.meanings.length) items.push({ meaning_cn: '', example_cn: '' });
+      while (items.length < word.meanings.length) items.push({ meaning_cn: '', example_en: '', example_cn: '' });
       setCnTranslations(prev => ({ ...prev, [key]: items }));
       setShowChinese(true);
       return;
@@ -308,16 +377,48 @@ function AppContent() {
     Alert.alert('中文释义获取失败', msg);
   }
 
-  async function runSearch() {
-    const trimmed = query.trim();
+  async function runSearch(overrideQuery?: string, autoOpen?: boolean) {
+    const trimmed = (overrideQuery ?? query).trim();
     if (!trimmed) return;
+    if (overrideQuery !== undefined) setQuery(trimmed);
+
+    // 优先从缓存中查找，避免重复网络请求（主要用于历史记录点击）
+    const cacheKey = trimmed.toLowerCase();
+    const cached = searchWordCache[cacheKey];
+    if (cached) {
+      setSearchResult(cached);
+      setSearchError('');
+      setSearchSuggestions([]);
+      // 更新历史顺序
+      setSearchHistory(prev => {
+        const filtered = prev.filter(w => w.toLowerCase() !== cacheKey);
+        return [cached.word, ...filtered].slice(0, 10);
+      });
+      if (autoOpen) openWord(cached);
+      return;
+    }
 
     setIsSearching(true);
     setSearchError('');
+    setSearchSuggestions([]);
     const outcome = await searchWord(trimmed, qwenApiKey);
     setIsSearching(false);
     if (outcome.kind === 'ok') {
       setSearchResult(outcome.word);
+      // 记录查词历史（去重，最新在前，最多10条）
+      setSearchHistory(prev => {
+        const word = outcome.word.word;
+        const filtered = prev.filter(w => w.toLowerCase() !== word.toLowerCase());
+        return [word, ...filtered].slice(0, 10);
+      });
+      // 存入缓存
+      setSearchWordCache(prev => ({ ...prev, [outcome.word.word.toLowerCase()]: outcome.word }));
+      if (autoOpen) openWord(outcome.word);
+      return;
+    }
+    if (outcome.kind === 'suggestions') {
+      setSearchResult(null);
+      setSearchSuggestions(outcome.items);
       return;
     }
     setSearchResult(null);
@@ -539,6 +640,8 @@ function AppContent() {
           isSearching={isSearching}
           result={searchResult}
           error={searchError}
+          suggestions={searchSuggestions}
+          history={searchHistory}
           onSearch={runSearch}
           onBack={() => back('home')}
           onOpenWord={openWord}
@@ -564,6 +667,7 @@ function AppContent() {
           onRemove={removeSelectedWord}
           onSpeak={speak}
           onAiChat={() => openAiChat(selectedWord)}
+          onLookupWord={(w) => runSearch(w, true)}
         />
       );
     }
@@ -667,6 +771,7 @@ function AppContent() {
           messages={chatMessages}
           busy={chatBusy}
           topInset={insets.top}
+          followUpQuestions={followUpQuestions}
           onBack={() => back('detail')}
           onSend={sendChat}
         />
@@ -757,6 +862,8 @@ function SearchScreen({
   isSearching,
   result,
   error,
+  suggestions,
+  history,
   onSearch,
   onBack,
   onOpenWord
@@ -766,10 +873,14 @@ function SearchScreen({
   isSearching: boolean;
   result: Word | null;
   error: string;
-  onSearch: () => void;
+  suggestions: string[];
+  history: string[];
+  onSearch: (overrideQuery?: string, autoOpen?: boolean) => void;
   onBack: () => void;
   onOpenWord: (word: Word) => void;
 }) {
+  const showHistory = !isSearching && !result && !error && suggestions.length === 0 && history.length > 0 && !query.trim();
+
   return (
     <View style={styles.screen}>
       <Header title="查词" onBack={onBack} />
@@ -779,21 +890,44 @@ function SearchScreen({
           onChangeText={setQuery}
           autoCapitalize="none"
           autoCorrect={false}
+          autoFocus
           placeholder="输入单词或短语"
           style={[styles.input, styles.searchInput]}
-          onSubmitEditing={onSearch}
+          onSubmitEditing={() => onSearch()}
         />
-        <Pressable style={styles.iconButton} onPress={onSearch}>
+        <Pressable style={styles.iconButton} onPress={() => onSearch()}>
           <Ionicons name="arrow-forward" size={20} color="#fff" />
         </Pressable>
       </View>
       <View style={styles.content}>
         {isSearching ? <Skeleton /> : null}
         {!isSearching && error ? <EmptyCard text={error} /> : null}
+        {!isSearching && suggestions.length > 0 ? (
+          <View>
+            <Text style={styles.suggestTitle}>暂未查到该词，猜你想搜</Text>
+            {suggestions.map((s, i) => (
+              <Pressable key={i} style={styles.suggestItem} onPress={() => onSearch(s, true)}>
+                <Ionicons name="search-outline" size={16} color={colors.primary} />
+                <Text style={styles.suggestText}>{s}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {!isSearching && result ? (
           <Pressable style={styles.resultCard} onPress={() => onOpenWord(result)}>
             <Text style={styles.listWord}>{result.word}</Text>
           </Pressable>
+        ) : null}
+        {showHistory ? (
+          <View>
+            <Text style={styles.suggestTitle}>查词历史</Text>
+            {history.map((w, i) => (
+              <Pressable key={i} style={styles.suggestItem} onPress={() => onSearch(w, true)}>
+                <Ionicons name="time-outline" size={16} color={colors.muted} />
+                <Text style={styles.historyText}>{w}</Text>
+              </Pressable>
+            ))}
+          </View>
         ) : null}
       </View>
     </View>
@@ -811,22 +945,33 @@ function WordDetailScreen({
   onAdd,
   onRemove,
   onSpeak,
-  onAiChat
+  onAiChat,
+  onLookupWord
 }: {
   word: Word;
   isAdded: boolean;
   showChinese: boolean;
   translatingCn: boolean;
-  extraCn: { meaning_cn: string; example_cn: string }[] | null;
+  extraCn: { meaning_cn: string; example_en: string; example_cn: string }[] | null;
   onToggleChinese: () => void;
   onBack: () => void;
   onAdd: () => void;
   onRemove: () => void;
   onSpeak: (word: string, accent: 'uk' | 'us') => void;
   onAiChat: () => void;
+  onLookupWord: (word: string) => void;
 }) {
   const hasCollocations = word.collocations.length > 0;
-  const cnButtonLabel = translatingCn ? '翻译中…' : showChinese ? '收起中文' : '中文释义';
+  const missingExamples = word.meanings.some(m => !m.example_en || !m.example_en.trim());
+  const cnButtonLabel = translatingCn
+    ? '加载中…'
+    : showChinese
+      ? '收起中文'
+      : missingExamples
+        ? 'AI 例句与中文释义'
+        : '中文释义';
+  const [activeTooltip, setActiveTooltip] = useState<{ id: string; word: string; x: number } | null>(null);
+
   return (
     <View style={styles.screen}>
       <Header
@@ -839,7 +984,16 @@ function WordDetailScreen({
           </Pressable>
         }
       />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        onScrollBeginDrag={() => setActiveTooltip(null)}
+      >
+        {activeTooltip ? (
+          <Pressable
+            style={styles.tooltipBackdrop}
+            onPress={() => setActiveTooltip(null)}
+          />
+        ) : null}
         <WordHeader word={word} onSpeak={onSpeak} />
         {hasCollocations ? (
           <Section title="Common Collocations">
@@ -848,7 +1002,14 @@ function WordDetailScreen({
             ))}
           </Section>
         ) : null}
-        <Meanings word={word} showChinese={showChinese} extraCn={extraCn} />
+        <Meanings
+          word={word}
+          showChinese={showChinese}
+          extraCn={extraCn}
+          onLookupWord={onLookupWord}
+          activeTooltip={activeTooltip}
+          onActivateTooltip={setActiveTooltip}
+        />
         <SecondaryButton label={cnButtonLabel} onPress={onToggleChinese} />
         {isAdded ? (
           <PrimaryButton label="移除生词本" onPress={onRemove} style={styles.dangerButton} />
@@ -1286,6 +1447,7 @@ function AiChatScreen({
   messages,
   busy,
   topInset,
+  followUpQuestions,
   onBack,
   onSend
 }: {
@@ -1293,13 +1455,18 @@ function AiChatScreen({
   messages: ChatMessage[];
   busy: boolean;
   topInset: number;
+  followUpQuestions: string[];
   onBack: () => void;
   onSend: (content: string) => void;
 }) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView | null>(null);
   const visibleMessages = messages.filter(m => m.role !== 'system');
-  const showPrompts = visibleMessages.length === 0;
+  const showInitialPrompts = visibleMessages.length === 0;
+  // 有对话历史时：优先显示 AI 生成的 followup，没有则回退显示默认推荐问题
+  const lastMsgIsAssistant = visibleMessages.length > 0 && visibleMessages[visibleMessages.length - 1].role === 'assistant';
+  const effectiveFollowUps = followUpQuestions.length > 0 ? followUpQuestions : (lastMsgIsAssistant ? DEFAULT_AI_PROMPTS : []);
+  const showFollowUps = !busy && effectiveFollowUps.length > 0 && visibleMessages.length > 0;
 
   function handleSend() {
     const value = draft.trim();
@@ -1324,7 +1491,8 @@ function AiChatScreen({
         ref={scrollRef}
         style={styles.chatScroll}
         contentContainerStyle={styles.chatContent}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
         <View style={styles.chatIntro}>
@@ -1336,9 +1504,19 @@ function AiChatScreen({
             key={`${m.role}-${idx}`}
             style={[styles.chatBubble, m.role === 'user' ? styles.chatBubbleUser : styles.chatBubbleAi]}
           >
-            <Text style={[styles.chatBubbleText, m.role === 'user' && styles.chatBubbleTextUser]}>
-              {m.content}
-            </Text>
+            {m.role === 'assistant' ? (
+              <TextInput
+                value={m.content}
+                multiline
+                editable={false}
+                scrollEnabled={false}
+                style={[styles.chatBubbleText, styles.chatBubbleTextSelectable]}
+              />
+            ) : (
+              <Text style={[styles.chatBubbleText, styles.chatBubbleTextUser]}>
+                {m.content}
+              </Text>
+            )}
           </View>
         ))}
         {busy ? (
@@ -1349,9 +1527,25 @@ function AiChatScreen({
         ) : null}
       </ScrollView>
 
-      {showPrompts ? (
+      {showInitialPrompts ? (
         <View style={styles.chatPromptList}>
           {DEFAULT_AI_PROMPTS.map(prompt => (
+            <Pressable
+              key={prompt}
+              style={styles.chatPromptChip}
+              onPress={() => handlePromptPress(prompt)}
+              disabled={busy}
+            >
+              <Ionicons name="sparkles" size={14} color={colors.primary} />
+              <Text style={styles.chatPromptText} numberOfLines={2}>{prompt}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      {showFollowUps ? (
+        <View style={styles.chatPromptList}>
+          {effectiveFollowUps.map(prompt => (
             <Pressable
               key={prompt}
               style={styles.chatPromptChip}
@@ -1374,6 +1568,9 @@ function AiChatScreen({
           multiline
           maxLength={500}
           editable={!busy}
+          blurOnSubmit={false}
+          keyboardType="default"
+          returnKeyType="default"
         />
         <Pressable
           style={[styles.chatSendBtn, (!draft.trim() || busy) && styles.chatSendBtnDisabled]}
@@ -1508,14 +1705,88 @@ function Phonetics({
   );
 }
 
+function TappableEnglishText({
+  text,
+  style,
+  onLookupWord,
+  id,
+  activeTooltip,
+  onActivateTooltip
+}: {
+  text: string;
+  style: any;
+  onLookupWord?: (word: string) => void;
+  id?: string;
+  activeTooltip?: { id: string; word: string; x: number } | null;
+  onActivateTooltip?: (info: { id: string; word: string; x: number } | null) => void;
+}) {
+  const containerRef = useRef<View>(null);
+
+  if (!onLookupWord) return <Text style={style}>{text}</Text>;
+
+  const isActive = activeTooltip?.id === id;
+  const parts = text.split(/(\s+|[^a-zA-Z'-]+)/);
+
+  return (
+    <View ref={containerRef} style={{ position: 'relative' }}>
+      <Text style={style}>
+        {parts.map((part, i) => {
+          const isWord = /^[a-zA-Z'-]+$/.test(part);
+          if (!isWord) return <Text key={i}>{part}</Text>;
+          const clean = part.replace(/^['-]+|['-]+$/g, '').toLowerCase();
+          const isHighlighted = isActive && activeTooltip?.word === clean;
+          return (
+            <Text
+              key={i}
+              onLongPress={(e) => {
+                if (clean.length > 1 && onActivateTooltip && id) {
+                  const pageX = e.nativeEvent.pageX;
+                  containerRef.current?.measure((_x, _y, _w, _h, px) => {
+                    const relativeX = pageX - (px ?? 0);
+                    onActivateTooltip({ id, word: clean, x: relativeX });
+                  });
+                }
+              }}
+              style={isHighlighted ? styles.highlightedWord : undefined}
+            >
+              {part}
+            </Text>
+          );
+        })}
+      </Text>
+      {isActive && activeTooltip ? (
+        <View style={[styles.lookupTooltipWrap, { left: activeTooltip.x }]}>
+          <Pressable
+            style={styles.lookupTooltip}
+            onPress={() => {
+              const w = activeTooltip.word;
+              onActivateTooltip?.(null);
+              onLookupWord(w);
+            }}
+          >
+            <Text style={styles.lookupTooltipText}>查询</Text>
+          </Pressable>
+          <View style={styles.lookupTooltipArrow} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function Meanings({
   word,
   showChinese,
-  extraCn = null
+  extraCn = null,
+  onLookupWord,
+  activeTooltip,
+  onActivateTooltip
 }: {
   word: Word;
   showChinese: boolean;
-  extraCn?: { meaning_cn: string; example_cn: string }[] | null;
+  extraCn?: { meaning_cn: string; example_en: string; example_cn: string }[] | null;
+  onLookupWord?: (word: string) => void;
+  activeTooltip?: { id: string; word: string; x: number } | null;
+  onActivateTooltip?: (info: { id: string; word: string; x: number } | null) => void;
 }) {
   return (
     <>
@@ -1523,13 +1794,38 @@ function Meanings({
         const fallback = extraCn?.[index];
         const cnMeaning = meaning.meaning_cn || fallback?.meaning_cn || '';
         const cnExample = meaning.example_cn || fallback?.example_cn || '';
+        const exampleEn = meaning.example_en || (showChinese ? (fallback?.example_en || '') : '');
         return (
           <View key={`${word.id}-${index}`} style={styles.meaningBlock}>
             <Text style={styles.meaningLabel}>Meaning {index + 1}</Text>
-            <Text style={styles.meaningEn}>{meaning.meaning_en}</Text>
+            <TappableEnglishText
+              text={meaning.meaning_en}
+              style={styles.meaningEn}
+              onLookupWord={onLookupWord}
+              id={`${word.id}-m-${index}`}
+              activeTooltip={activeTooltip}
+              onActivateTooltip={onActivateTooltip}
+            />
             {showChinese && cnMeaning ? <Text style={styles.meaningCn}>{cnMeaning}</Text> : null}
-            {meaning.example_en ? <Text style={styles.example}>{meaning.example_en}</Text> : null}
-            {showChinese && cnExample ? <Text style={styles.meaningCn}>{cnExample}</Text> : null}
+            {exampleEn ? (
+              <View style={styles.exampleBlock}>
+                <Text style={styles.exampleLabel}>{meaning.example_en ? 'Example' : 'AI Example'}</Text>
+                <TappableEnglishText
+                  text={exampleEn}
+                  style={styles.example}
+                  onLookupWord={onLookupWord}
+                  id={`${word.id}-e-${index}`}
+                  activeTooltip={activeTooltip}
+                  onActivateTooltip={onActivateTooltip}
+                />
+                {showChinese && cnExample ? <Text style={styles.exampleCn}>{cnExample}</Text> : null}
+              </View>
+            ) : showChinese && cnExample ? (
+              <View style={styles.exampleBlock}>
+                <Text style={styles.exampleLabel}>Example</Text>
+                <Text style={styles.exampleCn}>{cnExample}</Text>
+              </View>
+            ) : null}
           </View>
         );
       })}
@@ -1997,6 +2293,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22
   },
+  chatBubbleTextSelectable: {
+    padding: 0,
+    margin: 0,
+    textAlignVertical: 'top'
+  },
   chatBubbleTextUser: {
     color: '#fff'
   },
@@ -2098,6 +2399,30 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16
   },
+  suggestTitle: {
+    fontSize: 14,
+    color: colors.faint,
+    marginBottom: 10
+  },
+  suggestItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    marginBottom: 8
+  },
+  suggestText: {
+    fontSize: 16,
+    color: colors.primary,
+    fontWeight: '500'
+  },
+  historyText: {
+    fontSize: 16,
+    color: colors.text
+  },
   resultMeaning: {
     color: colors.muted,
     fontSize: 13,
@@ -2195,8 +2520,64 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 14,
     fontStyle: 'italic',
+    lineHeight: 22
+  },
+  exampleBlock: {
+    marginTop: 8,
+    paddingLeft: 12,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border
+  },
+  exampleLabel: {
+    fontSize: 12,
+    color: colors.faint,
+    marginBottom: 2
+  },
+  exampleCn: {
+    color: colors.muted,
+    fontSize: 14,
     lineHeight: 22,
-    marginTop: 8
+    marginTop: 2
+  },
+  lookupTooltipWrap: {
+    position: 'absolute',
+    top: -38,
+    transform: [{ translateX: -24 }],
+    alignItems: 'center',
+    zIndex: 999
+  },
+  lookupTooltip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#1C1C1E'
+  },
+  lookupTooltipText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '500'
+  },
+  lookupTooltipArrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderTopWidth: 6,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#1C1C1E'
+  },
+  highlightedWord: {
+    backgroundColor: '#E8DEFF',
+    borderRadius: 2
+  },
+  tooltipBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 998
   },
   bookItem: {
     backgroundColor: colors.surface,

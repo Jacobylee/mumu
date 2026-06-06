@@ -12,7 +12,9 @@ const KEYS = {
   dailyStats: `mumu:${VERSION}:dailyStats`,
   qwenApiKey: `mumu:${VERSION}:qwenApiKey`,
   chatHistory: `mumu:${VERSION}:chatHistory`,
-  cnTranslations: `mumu:${VERSION}:cnTranslations`
+  cnTranslations: `mumu:${VERSION}:cnTranslations`,
+  searchHistory: `mumu:${VERSION}:searchHistory`,
+  searchWordCache: `mumu:${VERSION}:searchWordCache`
 };
 
 export type DailyStats = {
@@ -27,7 +29,7 @@ export type AuthState = {
 
 export type ChatMessageRecord = { role: 'system' | 'user' | 'assistant'; content: string };
 export type ChatHistoryMap = Record<string, ChatMessageRecord[]>; // key: word.toLowerCase()
-export type CnTranslationItem = { meaning_cn: string; example_cn: string };
+export type CnTranslationItem = { meaning_cn: string; example_en: string; example_cn: string };
 export type CnTranslationMap = Record<string, CnTranslationItem[]>; // key: word.toLowerCase()
 
 export type PersistedState = {
@@ -140,6 +142,10 @@ export const saveDailyStats = (value: DailyStats) => writeJson(KEYS.dailyStats, 
 export const saveQwenApiKey = (value: string) => writeString(KEYS.qwenApiKey, value);
 export const saveChatHistory = (value: ChatHistoryMap) => writeJson(KEYS.chatHistory, value);
 export const saveCnTranslations = (value: CnTranslationMap) => writeJson(KEYS.cnTranslations, value);
+export const loadSearchHistory = () => readJson<string[]>(KEYS.searchHistory, []);
+export const saveSearchHistory = (value: string[]) => writeJson(KEYS.searchHistory, value);
+export const loadSearchWordCache = () => readJson<Record<string, unknown>>(KEYS.searchWordCache, {});
+export const saveSearchWordCache = (value: Record<string, unknown>) => writeJson(KEYS.searchWordCache, value);
 
 /** 仅供调试 / 退出登录时清空。 */
 export async function clearAll(): Promise<void> {

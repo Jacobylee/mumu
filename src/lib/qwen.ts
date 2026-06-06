@@ -1,8 +1,9 @@
 import { UsageTag, Word, WordMeaning } from '../types';
 
 const ENDPOINT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-const MODEL = 'qwen-plus';
-const REQUEST_TIMEOUT_MS = 20000;
+const MODEL_FAST = 'qwen-turbo';       // 用于对话（快，不需要结构化输出）
+const MODEL_PRECISE = 'qwen-plus';     // 用于查词/翻译/纠错（需要可靠 JSON 输出）
+const REQUEST_TIMEOUT_MS = 15000;
 
 const SYSTEM_PROMPT = `You are a professional English dictionary assistant. Given an English word or phrase, return a JSON object with the following structure:
 
@@ -37,6 +38,7 @@ Rules:
 export type SearchOutcome =
   | { kind: 'ok'; word: Word }
   | { kind: 'not_found' }
+  | { kind: 'suggestions'; items: string[] }
   | { kind: 'timeout' }
   | { kind: 'network' }
   | { kind: 'failed'; message?: string }
@@ -52,19 +54,20 @@ export type ChatOutcome =
   | { kind: 'no_key' };
 
 const CHAT_TIMEOUT_MS = 30000;
-const TRANSLATE_TIMEOUT_MS = 20000;
+const TRANSLATE_TIMEOUT_MS = 15000;
 
-const TRANSLATE_SYSTEM_PROMPT = `You are a professional English-Chinese translator for a vocabulary app. Given a JSON array of meaning objects (each with meaning_en and example_en), return a JSON object {"items":[{"meaning_cn":"...","example_cn":"..."}, ...]} preserving the exact same order and length. Rules:
+const TRANSLATE_SYSTEM_PROMPT = `You are a professional English-Chinese translator for a vocabulary app. Given a JSON array of meaning objects (each with meaning_en and example_en), return a JSON object {"items":[{"meaning_cn":"...","example_en":"...","example_cn":"..."}, ...]} preserving the exact same order and length. Rules:
 1. meaning_cn: 准确、简洁的中文释义，保留词性标记如（v.）。
-2. example_cn: 为 example_en 提供自然准确的中文翻译；若 example_en 为空则 example_cn 返回空字符串。
-3. Output ONLY valid JSON, no markdown, no extra text.`;
+2. If example_en in the input is non-empty, keep it unchanged in the output and provide example_cn as its Chinese translation.
+3. If example_en in the input is empty, generate a natural, clear English example sentence that demonstrates the meaning, and provide its Chinese translation as example_cn.
+4. Output ONLY valid JSON, no markdown, no extra text.`;
 
 /**
  * 按需调 Qwen 为已有的英文释义补充中文翻译。
  * 输入为一组 {meaning_en, example_en}，输出为同顺序等长的 {meaning_cn, example_cn}。
  */
 export type TranslateOutcome =
-  | { kind: 'ok'; items: Array<{ meaning_cn: string; example_cn: string }> }
+  | { kind: 'ok'; items: Array<{ meaning_cn: string; example_en: string; example_cn: string }> }
   | { kind: 'timeout' }
   | { kind: 'network' }
   | { kind: 'failed'; message?: string }
@@ -88,7 +91,7 @@ export async function translateMeaningsToChinese(
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MODEL,
+        model: MODEL_PRECISE,
         messages: [
           { role: 'system', content: TRANSLATE_SYSTEM_PROMPT },
           { role: 'user', content: JSON.stringify(payload) }
@@ -113,9 +116,9 @@ export async function translateMeaningsToChinese(
     if (!itemsRaw) return { kind: 'failed', message: 'missing items field' };
 
     const items = itemsRaw.map(it => {
-      if (typeof it !== 'object' || it === null) return { meaning_cn: '', example_cn: '' };
+      if (typeof it !== 'object' || it === null) return { meaning_cn: '', example_en: '', example_cn: '' };
       const obj = it as Record<string, unknown>;
-      return { meaning_cn: str(obj.meaning_cn), example_cn: str(obj.example_cn) };
+      return { meaning_cn: str(obj.meaning_cn), example_en: str(obj.example_en), example_cn: str(obj.example_cn) };
     });
     return { kind: 'ok', items };
   } catch (err: unknown) {
@@ -127,8 +130,130 @@ export async function translateMeaningsToChinese(
 }
 
 /**
- * 多轮对话接口：供「问一问 AI」页面使用。
- * 会话上下文由调用方维护，此函数不做重试，避免重复计费。
+ * 多轮对话接口（流式优先，自动降级）：供「问一问 AI」页面使用。
+ * 通过 onChunk 回调逐步返回文本，用户可即时看到回复。
+ * 如果环境不支持流式，自动降级为非流式请求。
+ */
+export async function chatWithQwenStream(
+  messages: ChatMessage[],
+  apiKey: string,
+  onChunk: (text: string) => void
+): Promise<ChatOutcome> {
+  if (!apiKey || !apiKey.trim()) return { kind: 'no_key' };
+  if (messages.length === 0) return { kind: 'failed', message: 'empty messages' };
+
+  // 先尝试流式
+  const streamResult = await tryStreamChat(messages, apiKey, onChunk);
+  if (streamResult !== null) return streamResult;
+
+  // 流式不可用，降级为非流式
+  const result = await chatWithQwen(messages, apiKey);
+  if (result.kind === 'ok') onChunk(result.reply);
+  return result;
+}
+
+/** 尝试流式请求，如果环境不支持则返回 null */
+async function tryStreamChat(
+  messages: ChatMessage[],
+  apiKey: string,
+  onChunk: (text: string) => void
+): Promise<ChatOutcome | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+  try {
+    const resp = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: MODEL_FAST,
+        messages,
+        temperature: 0.5,
+        stream: true
+      })
+    });
+
+    if (!resp.ok) {
+      const text = await safeText(resp);
+      return { kind: 'failed', message: `HTTP ${resp.status} ${text.slice(0, 120)}` };
+    }
+
+    // 检测流式支持
+    const reader = resp.body?.getReader?.();
+    if (!reader) {
+      // 尝试用 resp.text() 解析 SSE 格式
+      try {
+        const rawText = await resp.text();
+        const fullReply = parseSSEText(rawText);
+        if (fullReply.trim()) {
+          onChunk(fullReply);
+          return { kind: 'ok', reply: fullReply };
+        }
+      } catch { /* fall through */ }
+      // SSE 解析也失败，返回 null 触发非流式降级
+      return null;
+    }
+
+    const decoder = new TextDecoder();
+    let fullReply = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') break;
+        try {
+          const json = JSON.parse(data);
+          const delta = json?.choices?.[0]?.delta?.content ?? '';
+          if (delta) {
+            fullReply += delta;
+            onChunk(fullReply);
+          }
+        } catch { /* skip invalid chunk */ }
+      }
+    }
+
+    if (!fullReply.trim()) return { kind: 'failed', message: 'empty reply' };
+    return { kind: 'ok', reply: fullReply };
+  } catch (err: unknown) {
+    if (isAbortError(err)) return { kind: 'timeout' };
+    // 网络错误不降级，直接返回
+    return { kind: 'network' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 从 SSE 文本中提取完整的回复内容 */
+function parseSSEText(rawText: string): string {
+  let result = '';
+  const lines = rawText.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
+    if (data === '[DONE]') break;
+    try {
+      const json = JSON.parse(data);
+      const delta = json?.choices?.[0]?.delta?.content ?? '';
+      if (delta) result += delta;
+    } catch { /* skip */ }
+  }
+  return result;
+}
+
+/**
+ * 多轮对话接口（非流式，保留兼容）。
  */
 export async function chatWithQwen(messages: ChatMessage[], apiKey: string): Promise<ChatOutcome> {
   if (!apiKey || !apiKey.trim()) return { kind: 'no_key' };
@@ -145,7 +270,7 @@ export async function chatWithQwen(messages: ChatMessage[], apiKey: string): Pro
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MODEL,
+        model: MODEL_FAST,
         messages,
         temperature: 0.5
       })
@@ -198,7 +323,7 @@ async function callOnce(query: string, apiKey: string): Promise<SearchOutcome> {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MODEL,
+        model: MODEL_PRECISE,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: query }
@@ -300,4 +425,74 @@ function toWord(raw: Record<string, unknown>, query: string): Word | null {
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+// ─── 模糊搜索：拼写纠错建议 ───────────────────────────────────────────
+
+const SUGGEST_TIMEOUT_MS = 15000;
+
+const SUGGEST_SYSTEM_PROMPT = `You are a spelling correction assistant. Given a possibly misspelled English word or phrase, suggest up to 3 correct English words/phrases the user most likely intended.
+
+Rules:
+1. Return a JSON array of strings, e.g. ["word1", "word2", "word3"].
+2. Order by likelihood (most likely first).
+3. Only return valid, common English words or phrases.
+4. If the input is already correct, return it as the single element.
+5. Return ONLY valid JSON, no additional text or markdown.`;
+
+export type SuggestOutcome =
+  | { kind: 'ok'; items: string[] }
+  | { kind: 'timeout' }
+  | { kind: 'network' }
+  | { kind: 'failed'; message?: string }
+  | { kind: 'no_key' };
+
+/**
+ * 调 Qwen 做拼写纠错，返回最多 3 个建议词。
+ */
+export async function suggestSimilarWords(query: string, apiKey: string): Promise<SuggestOutcome> {
+  if (!apiKey || !apiKey.trim()) return { kind: 'no_key' };
+  const trimmed = query.trim();
+  if (!trimmed) return { kind: 'failed', message: 'empty query' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUGGEST_TIMEOUT_MS);
+  try {
+    const resp = await fetch(ENDPOINT, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.trim()}` },
+      body: JSON.stringify({
+        model: MODEL_PRECISE,
+        messages: [
+          { role: 'system', content: SUGGEST_SYSTEM_PROMPT },
+          { role: 'user', content: trimmed }
+        ],
+        temperature: 0.3
+      })
+    });
+
+    if (!resp.ok) return { kind: 'failed', message: `HTTP ${resp.status}` };
+    const json = await resp.json();
+    const raw: string = json?.choices?.[0]?.message?.content ?? '';
+    if (!raw.trim()) return { kind: 'failed', message: 'empty reply' };
+
+    const cleaned = raw.replace(/```[\s\S]*?```/g, '').trim();
+    const match = cleaned.match(/\[([\s\S]*?)\]/);
+    if (!match) return { kind: 'failed', message: 'invalid JSON' };
+
+    const parsed = JSON.parse(`[${match[1]}]`);
+    const items: string[] = parsed
+      .filter((s: unknown) => typeof s === 'string' && s.trim().length > 0)
+      .map((s: string) => s.trim())
+      .slice(0, 3);
+
+    if (items.length === 0) return { kind: 'failed', message: 'no suggestions' };
+    return { kind: 'ok', items };
+  } catch (err: unknown) {
+    if (isAbortError(err)) return { kind: 'timeout' };
+    return { kind: 'network' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
