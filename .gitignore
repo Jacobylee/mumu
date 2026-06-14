@@ -19,3 +19,7 @@ android/
 *.apk
 *.aab
 *.ipa
+
+# 录屏源文件
+*.MP4
+*.mp4
